@@ -33,7 +33,7 @@ namespace API
                 double midLat = (lat1 + lat2) / 2;
                 double midLon = (lon1 + lon2) / 2;
 
-                string overpassQuery = $"[out:json];way(around:10000,{midLat},{midLon});out;";
+                string overpassQuery = $"[out:json];way(around:1000,{midLat},{midLon});out;";
                 string overpassUrl = $"https://lz4.overpass-api.de/api/interpreter?data={Uri.EscapeDataString(overpassQuery)}";
 
                 // Download GeoJSON data and store it in a JSON file
@@ -54,13 +54,12 @@ namespace API
                     geoJsonObject.type = "FeatureCollection";
                 }
 
-                // Filter for highways (roads) in the features collection
                 List<dynamic> filteredFeatures = new List<dynamic>();
                 foreach (var feature in geoJsonObject.features ?? Enumerable.Empty<dynamic>())
                 {
                     var highwayValue = feature?["properties"]?["highway"];
 
-                    if (highwayValue != null && highwayValue.ToString().ToLower() == "road")
+                    if (highwayValue != null && IsRoad(highwayValue.ToString()))
                     {
                         filteredFeatures.Add(feature);
                     }
@@ -82,44 +81,43 @@ namespace API
                     // Print the path to the filtered GeoJSON file
                     Console.WriteLine("Filtered GeoJSON File Path:");
                     Console.WriteLine(filteredFilePath);
+
+                    // Print each filtered feature
+                    Console.WriteLine("Filtered Features Details:");
+                    foreach (var feature in filteredFeatures)
+                    {
+                        Console.WriteLine($"Type: {feature.type}");
+                        Console.WriteLine($"ID: {feature.id}");
+                        Console.WriteLine($"Nodes: {string.Join(", ", feature.nodes)}");
+                        Console.WriteLine($"Tags: {JsonConvert.SerializeObject(feature.tags)}");
+                        Console.WriteLine();
+                    }
+
+                    // Process filtered GeoJSON and create a new graph
+                    Graph graph = ProcessGeoJson(filteredFeatures);
+
+                    // Find the shortest path using Dijkstra's algorithm
+                    List<Vertex> shortestPath = graph.FindShortestPath(new Vertex(lat1, lon1), new Vertex(lat2, lon2));
+
+                    // Convert shortest path to GeoJSON LineString
+                    string shortestPathGeoJson = ConvertToGeoJsonLineString(shortestPath);
+
+                    // Save the shortest path GeoJSON to a file
+                    string shortestPathFilePath = Path.Combine(Directory.GetCurrentDirectory(), "shortest-path.geojson");
+                    File.WriteAllText(shortestPathFilePath, shortestPathGeoJson);
+
+                    // Print the path to the shortest path GeoJSON file
+                    Console.WriteLine("Shortest Path GeoJSON File Path:");
+                    Console.WriteLine(shortestPathFilePath);
                 }
                 else
                 {
                     Console.WriteLine("No features were filtered.");
                 }
 
+
+
                 Console.WriteLine();
-                Console.ReadKey();
-
-                // Create a new dynamic object with the modified features array
-                dynamic modifiedGeoJsonObject = new
-                {
-                    type = geoJsonObject.type,
-                    features = filteredFeatures
-                };
-
-                // Convert the modified dynamic object to a JSON string
-                string modifiedGeoJsonString = JsonConvert.SerializeObject(modifiedGeoJsonObject);
-
-                // Deserialize the modified GeoJSON string into a FeatureCollection
-                FeatureCollection featureCollection = JsonConvert.DeserializeObject<FeatureCollection>(modifiedGeoJsonString);
-
-                // Process GeoJSON and find the shortest path
-                Graph graph = ProcessGeoJson(featureCollection);
-                List<Vertex> shortestPath = graph.FindShortestPath(new Vertex(lat1, lon1), new Vertex(lat2, lon2));
-
-                // Convert shortest path to GeoJSON LineString
-                string grahamScanPath = ConvertToGeoJsonLineString(shortestPath);
-
-                // Create GeoJSON.io URL
-                string grahamScanUrl = $"https://geojson.io/#data=data:application/json,{Uri.EscapeDataString(grahamScanPath)}";
-
-                // Print results
-                Console.WriteLine("Graham Scan Path:");
-                Console.WriteLine(grahamScanPath);
-                Console.WriteLine();
-                Console.WriteLine("Graham Scan URL:");
-                Console.WriteLine(grahamScanUrl);
                 Console.ReadKey();
 
             }
@@ -127,7 +125,19 @@ namespace API
             {
                 Console.WriteLine($"An error occurred: {ex.Message}");
             }
+
         }
+        private static bool IsRoad(string highwayValue)
+        {
+            if (string.IsNullOrWhiteSpace(highwayValue))
+                return false;
+
+            // Add relevant road types here
+            string[] roadTypes = { "residential", "motorway", "trunk" };
+
+            return roadTypes.Contains(highwayValue.ToLower());
+        }
+
 
         static async Task DownloadAndSaveGeoJson(string url, string filePath)
         {
@@ -139,12 +149,11 @@ namespace API
                 File.WriteAllText(filePath, geoJson);
             }
         }
-
-        static Graph ProcessGeoJson(FeatureCollection featureCollection)
+        static Graph ProcessGeoJson(List<dynamic> filteredFeatures)
         {
             Graph graph = new Graph();
 
-            foreach (var feature in featureCollection.Features)
+            foreach (var feature in filteredFeatures)
             {
                 if (feature.Geometry.Type == GeoJSONObjectType.LineString)
                 {
@@ -182,14 +191,17 @@ namespace API
             LineString lineString = new LineString(lineStringPositions);
             Feature feature = new Feature(lineString);
 
-            return JsonConvert.SerializeObject(feature);
+            FeatureCollection featureCollection = new FeatureCollection();
+            featureCollection.Features.Add(feature);
+
+            return JsonConvert.SerializeObject(featureCollection);
         }
     }
 
     public class Vertex
     {
-        public double Latitude { get; set; }
-        public double Longitude { get; set; }
+        public double Latitude { get; }
+        public double Longitude { get; }
 
         public Vertex(double latitude, double longitude)
         {
@@ -223,59 +235,108 @@ namespace API
             adjacencyList[vertex1].Add(vertex2);
             adjacencyList[vertex2].Add(vertex1);
         }
-
         public List<Vertex> FindShortestPath(Vertex startVertex, Vertex endVertex)
         {
-            Queue<Vertex> queue = new Queue<Vertex>();
-            Dictionary<Vertex, Vertex> visited = new Dictionary<Vertex, Vertex>();
-            Dictionary<Vertex, int> distances = new Dictionary<Vertex, int>();
+            Dictionary<Vertex, double> distances = new Dictionary<Vertex, double>();
+            Dictionary<Vertex, Vertex> previous = new Dictionary<Vertex, Vertex>();
+            HashSet<Vertex> unvisited = new HashSet<Vertex>();
 
-            foreach (Vertex v in adjacencyList.Keys.ToList())
+            foreach (var v in adjacencyList.Keys)
             {
-                visited[v] = null;
-                distances[v] = int.MaxValue;
+                distances[v] = double.MaxValue;
+                previous[v] = null;
+                unvisited.Add(v);
             }
 
-            visited[startVertex] = startVertex;
             distances[startVertex] = 0;
-            queue.Enqueue(startVertex);
 
-            while (queue.Count > 0)
+            while (unvisited.Count > 0)
             {
-                Vertex currentVertex = queue.Dequeue();
+                Vertex currentVertex = null;
+                double minDistance = double.MaxValue;
+
+                foreach (var vertex in unvisited)
+                {
+                    if (distances[vertex] < minDistance)
+                    {
+                        minDistance = distances[vertex];
+                        currentVertex = vertex;
+                    }
+                }
+
+                if (currentVertex == null)
+                {
+                    break;
+                }
+
+                unvisited.Remove(currentVertex);
 
                 if (currentVertex == endVertex)
                 {
                     break;
                 }
 
-                foreach (Vertex neighborVertex in adjacencyList[currentVertex])
+                foreach (var neighborVertex in adjacencyList[currentVertex])
                 {
-                    if (visited[neighborVertex] == null)
+                    double distance = distances[currentVertex] + CalculateDistance(currentVertex, neighborVertex);
+
+                    if (distance < distances[neighborVertex])
                     {
-                        visited[neighborVertex] = currentVertex;
-                        distances[neighborVertex] = distances[currentVertex] + 1;
-                        queue.Enqueue(neighborVertex);
+                        distances[neighborVertex] = distance;
+                        previous[neighborVertex] = currentVertex;
                     }
                 }
             }
 
-            if (visited[endVertex] == null)
+            if (previous[endVertex] == null)
             {
                 return new List<Vertex>();
             }
 
             List<Vertex> shortestPath = new List<Vertex>();
-            Vertex vertex = endVertex;
-            while (vertex != startVertex)
-            {
-                shortestPath.Add(vertex);
-                vertex = visited[vertex];
-            }
-            shortestPath.Add(startVertex);
-            shortestPath.Reverse();
+            Vertex pathVertex = endVertex;
 
+            while (pathVertex != null)
+            {
+                shortestPath.Add(pathVertex);
+                pathVertex = previous[pathVertex];
+            }
+
+            shortestPath.Reverse();
             return shortestPath;
+        }
+
+
+
+        private double CalculateDistance(Vertex vertex1, Vertex vertex2)
+        {
+            // Replace with your distance calculation logic (e.g., Haversine formula)
+            // Example:
+            double lat1 = vertex1.Latitude;
+            double lon1 = vertex1.Longitude;
+            double lat2 = vertex2.Latitude;
+            double lon2 = vertex2.Longitude;
+
+            double theta = lon1 - lon2;
+            double dist = Math.Sin(DegreesToRadians(lat1)) * Math.Sin(DegreesToRadians(lat2))
+                          + Math.Cos(DegreesToRadians(lat1)) * Math.Cos(DegreesToRadians(lat2))
+                          * Math.Cos(DegreesToRadians(theta));
+            dist = Math.Acos(dist);
+            dist = RadiansToDegrees(dist);
+            dist = dist * 60 * 1.1515;
+            dist = dist * 1.609344; // Convert miles to kilometers
+
+            return dist;
+        }
+
+        private double DegreesToRadians(double degrees)
+        {
+            return degrees * Math.PI / 180.0;
+        }
+
+        private double RadiansToDegrees(double radians)
+        {
+            return radians * 180.0 / Math.PI;
         }
     }
 }
