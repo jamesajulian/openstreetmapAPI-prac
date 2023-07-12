@@ -1,13 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using GeoJSON.Net;
 using GeoJSON.Net.Feature;
 using GeoJSON.Net.Geometry;
 using Newtonsoft.Json;
+using System.Linq;
 
 namespace API
 {
@@ -30,17 +30,13 @@ namespace API
                 double lat2 = double.Parse(secondCoordinate[0]);
                 double lon2 = double.Parse(secondCoordinate[1]);
 
-                double midLat = (lat1 + lat2) / 2;
-                double midLon = (lon1 + lon2) / 2;
-
-                string overpassQuery = $"[out:json];way(around:1000,{midLat},{midLon});out;";
+                string overpassQuery = $"[out:json];way(around:5000,{lat1},{lon1},{lat2},{lon2})[highway~\"^(primary|secondary|tertiary|residential|motorway)$\"];out;";
                 string overpassUrl = $"https://lz4.overpass-api.de/api/interpreter?data={Uri.EscapeDataString(overpassQuery)}";
 
                 // Download GeoJSON data and store it in a JSON file
                 string directory = @"D:\c# work\NEA\NEA PRACTICE\NEA OPENSTREETMAP PRACTICE\data2";
                 string filePath = Path.Combine(directory, "data.geojson");
                 await DownloadAndSaveGeoJson(overpassUrl, filePath);
-
 
                 // Read the GeoJSON data from the file
                 string geoJson = File.ReadAllText(filePath);
@@ -54,90 +50,79 @@ namespace API
                     geoJsonObject.type = "FeatureCollection";
                 }
 
-                List<dynamic> filteredFeatures = new List<dynamic>();
-                foreach (var feature in geoJsonObject.features ?? Enumerable.Empty<dynamic>())
+                // Process GeoJSON and create a new graph
+                Graph graph = ProcessGeoJson(geoJsonObject);
+
+                if (graph != null)
                 {
-                    var highwayValue = feature?["properties"]?["highway"];
+                    // Find the nearest road node for the first coordinate
+                    Vertex startVertex = FindNearestRoadNode(graph, new Vertex(lat1, lon1));
+                    Console.WriteLine($"Start vertex: {startVertex.Latitude}, {startVertex.Longitude}");
 
-                    if (highwayValue != null && IsRoad(highwayValue.ToString()))
-                    {
-                        filteredFeatures.Add(feature);
-                    }
-                }
+                    // Find the nearest road node for the second coordinate
+                    Vertex endVertex = FindNearestRoadNode(graph, new Vertex(lat2, lon2));
+                    Console.WriteLine($"End vertex: {endVertex.Latitude}, {endVertex.Longitude}");
 
-                // Check if features have been filtered or not
-                bool isFiltered = filteredFeatures.Count > 0;
-                Console.WriteLine("Filtered Features:");
-                if (isFiltered)
-                {
-                    // Convert the filtered features to a JSON string
-                    string filteredGeoJsonString = JsonConvert.SerializeObject(filteredFeatures);
-                    Console.WriteLine(filteredGeoJsonString);
+                    // Find the closest road node for the first coordinate
+                    Console.WriteLine("Finding the closest road node for the first coordinate...");
+                    int closestNodeIndex1 = FindClosestNode(graph.NodeLatLons, lat1, lon1);
+                    Console.WriteLine($"Closest node index: {closestNodeIndex1}");
 
-                    // Save the filtered GeoJSON to a file
-                    string filteredFilePath = Path.Combine(Directory.GetCurrentDirectory(), "filtered-data.geojson");
-                    File.WriteAllText(filteredFilePath, filteredGeoJsonString);
-
-                    // Print the path to the filtered GeoJSON file
-                    Console.WriteLine("Filtered GeoJSON File Path:");
-                    Console.WriteLine(filteredFilePath);
-
-                    // Print each filtered feature
-                    Console.WriteLine("Filtered Features Details:");
-                    foreach (var feature in filteredFeatures)
-                    {
-                        Console.WriteLine($"Type: {feature.type}");
-                        Console.WriteLine($"ID: {feature.id}");
-                        Console.WriteLine($"Nodes: {string.Join(", ", feature.nodes)}");
-                        Console.WriteLine($"Tags: {JsonConvert.SerializeObject(feature.tags)}");
-                        Console.WriteLine();
-                    }
-
-                    // Process filtered GeoJSON and create a new graph
-                    Graph graph = ProcessGeoJson(filteredFeatures);
+                    // Find the closest road node for the second coordinate
+                    Console.WriteLine("Finding the closest road node for the second coordinate...");
+                    int closestNodeIndex2 = FindClosestNode(graph.NodeLatLons, lat2, lon2);
+                    Console.WriteLine($"Closest node index: {closestNodeIndex2}");
 
                     // Find the shortest path using Dijkstra's algorithm
-                    List<Vertex> shortestPath = graph.FindShortestPath(new Vertex(lat1, lon1), new Vertex(lat2, lon2));
+                    List<Vertex> shortestPath = graph.FindShortestPath(startVertex, endVertex);
 
-                    // Convert shortest path to GeoJSON LineString
-                    string shortestPathGeoJson = ConvertToGeoJsonLineString(shortestPath);
+                    if (shortestPath.Count > 0)
+                    {
+                        // Convert shortest path to GeoJSON LineString
+                        string shortestPathGeoJson = ConvertToGeoJsonLineString(shortestPath);
 
-                    // Save the shortest path GeoJSON to a file
-                    string shortestPathFilePath = Path.Combine(Directory.GetCurrentDirectory(), "shortest-path.geojson");
-                    File.WriteAllText(shortestPathFilePath, shortestPathGeoJson);
+                        // Save the shortest path GeoJSON to a file
+                        string shortestPathFilePath = Path.Combine(Directory.GetCurrentDirectory(), "shortest-path.geojson");
+                        File.WriteAllText(shortestPathFilePath, shortestPathGeoJson);
 
-                    // Print the path to the shortest path GeoJSON file
-                    Console.WriteLine("Shortest Path GeoJSON File Path:");
-                    Console.WriteLine(shortestPathFilePath);
+                        // Reverse geocode the shortest path to get the coordinates for each node
+                        Console.WriteLine("Reverse geocoding the shortest path...");
+                        List<Vertex> geocodedShortestPath = await ReverseGeocodeShortestPath(shortestPath);
+
+                        // Convert geocoded shortest path to GeoJSON LineString
+                        string geocodedShortestPathGeoJson = ConvertToGeoJsonLineString(geocodedShortestPath);
+
+                        // Save the geocoded shortest path GeoJSON to a file
+                        string geocodedShortestPathFilePath = Path.Combine(Directory.GetCurrentDirectory(), "geocoded-shortest-path.geojson");
+                        File.WriteAllText(geocodedShortestPathFilePath, geocodedShortestPathGeoJson);
+
+                        // Print the path to the geocoded shortest path GeoJSON file
+                        Console.WriteLine("Geocoded Shortest Path GeoJSON File Path:");
+                        Console.WriteLine(geocodedShortestPathFilePath);
+
+                        // Open geojson.io with the geocoded shortest path data
+                        OpenGeoJsonIO(geocodedShortestPathFilePath);
+
+                        Console.ReadKey();
+                    }
+                    else
+                    {
+                        Console.WriteLine("No shortest path found.");
+                        Console.ReadKey();
+                    }
                 }
                 else
                 {
-                    Console.WriteLine("No features were filtered.");
+                    Console.WriteLine("Failed to process GeoJSON data.");
+                    Console.ReadKey();
                 }
-
-
-
-                Console.WriteLine();
-                Console.ReadKey();
-
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"An error occurred: {ex.Message}");
+                Console.ReadKey();
             }
-
         }
-        private static bool IsRoad(string highwayValue)
-        {
-            if (string.IsNullOrWhiteSpace(highwayValue))
-                return false;
-
-            // Add relevant road types here
-            string[] roadTypes = { "residential", "motorway", "trunk" };
-
-            return roadTypes.Contains(highwayValue.ToLower());
-        }
-
 
         static async Task DownloadAndSaveGeoJson(string url, string filePath)
         {
@@ -149,21 +134,21 @@ namespace API
                 File.WriteAllText(filePath, geoJson);
             }
         }
-        static Graph ProcessGeoJson(List<dynamic> filteredFeatures)
+
+        static Graph ProcessGeoJson(dynamic geoJsonObject)
         {
             Graph graph = new Graph();
 
-            foreach (var feature in filteredFeatures)
+            foreach (var feature in geoJsonObject.features ?? Enumerable.Empty<dynamic>())
             {
-                if (feature.Geometry.Type == GeoJSONObjectType.LineString)
+                if (feature.geometry?.type == "LineString")
                 {
-                    LineString lineString = feature.Geometry as LineString;
                     List<Vertex> vertices = new List<Vertex>();
 
-                    foreach (var position in lineString.Coordinates)
+                    foreach (var position in feature.geometry.coordinates)
                     {
-                        double latitude = position.Latitude;
-                        double longitude = position.Longitude;
+                        double latitude = position[1];
+                        double longitude = position[0];
 
                         Vertex vertex = new Vertex(latitude, longitude);
                         vertices.Add(vertex);
@@ -184,17 +169,125 @@ namespace API
             return graph;
         }
 
+        static Vertex FindNearestRoadNode(Graph graph, Vertex coordinate)
+        {
+            // Find the nearest road node by calculating the Euclidean distance
+
+            Vertex nearestNode = null;
+            double minDistance = double.MaxValue;
+
+            foreach (var node in graph.adjacencyList.Keys)
+            {
+                double distance = graph.CalculateDistance(coordinate, node);
+
+                if (distance < minDistance)
+                {
+                    minDistance = distance;
+                    nearestNode = node;
+                }
+            }
+
+            return nearestNode;
+        }
+
+        static int FindClosestNode(List<double[]> nodeLatLons, double lat, double lon)
+        {
+            // Find the closest node index using the scaled haversine node distance
+
+            int closestNodeIndex = 0;
+            double closestDistance = ScaledHaversineNodeDistance(lat, lon, nodeLatLons[0][0], nodeLatLons[0][1]);
+
+            for (int i = 1; i < nodeLatLons.Count; i++)
+            {
+                double distance = ScaledHaversineNodeDistance(lat, lon, nodeLatLons[i][0], nodeLatLons[i][1]);
+
+                if (distance < closestDistance)
+                {
+                    closestDistance = distance;
+                    closestNodeIndex = i;
+                }
+            }
+
+            return closestNodeIndex;
+        }
+
+        static double ScaledHaversineNodeDistance(double lat1, double lon1, double lat2, double lon2)
+        {
+            // Implement your own scaled haversine node distance calculation
+            // Replace the code below with your implementation
+
+            double haversineDistance = HaversineDistance(lat1, lon1, lat2, lon2);
+            double scaledDistance = haversineDistance * 1000; // Scale the distance by a factor
+
+            return scaledDistance;
+        }
+
+        static double HaversineDistance(double lat1, double lon1, double lat2, double lon2)
+        {
+            // Haversine distance calculation between two coordinates
+
+            double R = 6371; // Radius of the Earth in kilometers
+            double dLat = DegreesToRadians(lat2 - lat1);
+            double dLon = DegreesToRadians(lon2 - lon1);
+            double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                       Math.Cos(DegreesToRadians(lat1)) * Math.Cos(DegreesToRadians(lat2)) *
+                       Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+            double c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+            double distance = R * c;
+
+            return distance;
+        }
+
+        static double DegreesToRadians(double degrees)
+        {
+            return degrees * Math.PI / 180.0;
+        }
+
         static string ConvertToGeoJsonLineString(List<Vertex> vertices)
         {
-            List<IPosition> lineStringPositions = vertices.Select(vertex => (IPosition)new Position(vertex.Latitude, vertex.Longitude)).ToList();
-
-            LineString lineString = new LineString(lineStringPositions);
-            Feature feature = new Feature(lineString);
-
-            FeatureCollection featureCollection = new FeatureCollection();
+            var lineStringPositions = vertices.Select(vertex => new Position(vertex.Latitude, vertex.Longitude)).ToList();
+            var lineString = new LineString(lineStringPositions);
+            var feature = new Feature(lineString);
+            var featureCollection = new FeatureCollection();
             featureCollection.Features.Add(feature);
 
             return JsonConvert.SerializeObject(featureCollection);
+        }
+
+        static async Task<List<Vertex>> ReverseGeocodeShortestPath(List<Vertex> shortestPath)
+        {
+            // Reverse geocode each vertex in the shortest path to get the coordinates
+
+            List<Vertex> geocodedPath = new List<Vertex>();
+            string apiKey = "5b3ce3597851110001cf624800a0f6d78de048e280faef2746b611d3";
+
+            foreach (var vertex in shortestPath)
+            {
+                string reverseGeocodeUrl = $"https://api.openrouteservice.org/geocode/reverse?api_key={apiKey}&point.lon={vertex.Longitude}&point.lat={vertex.Latitude}";
+
+                using (HttpClient client = new HttpClient())
+                {
+                    HttpResponseMessage response = await client.GetAsync(reverseGeocodeUrl);
+                    response.EnsureSuccessStatusCode();
+                    string responseJson = await response.Content.ReadAsStringAsync();
+                    dynamic responseObject = JsonConvert.DeserializeObject<dynamic>(responseJson);
+
+                    double lon = responseObject.features[0].geometry.coordinates[0];
+                    double lat = responseObject.features[0].geometry.coordinates[1];
+
+                    geocodedPath.Add(new Vertex(lat, lon));
+                }
+            }
+
+            return geocodedPath;
+        }
+
+        static void OpenGeoJsonIO(string filePath)
+        {
+            // Open geojson.io with the given GeoJSON file path
+
+            string geoJsonIOUrl = $"https://geojson.io/#data=data:application/json,{Uri.EscapeDataString(File.ReadAllText(filePath))}";
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(geoJsonIOUrl) { UseShellExecute = true });
         }
     }
 
@@ -212,11 +305,13 @@ namespace API
 
     public class Graph
     {
-        private Dictionary<Vertex, List<Vertex>> adjacencyList;
+        public Dictionary<Vertex, List<Vertex>> adjacencyList;
+        public List<double[]> NodeLatLons;
 
         public Graph()
         {
             adjacencyList = new Dictionary<Vertex, List<Vertex>>();
+            NodeLatLons = new List<double[]>();
         }
 
         public void AddNode(Vertex vertex)
@@ -224,19 +319,38 @@ namespace API
             if (!adjacencyList.ContainsKey(vertex))
             {
                 adjacencyList[vertex] = new List<Vertex>();
+                NodeLatLons.Add(new double[] { vertex.Latitude, vertex.Longitude });
+                Console.WriteLine($"Added new node: {vertex.Latitude}, {vertex.Longitude}");
+            }
+            else
+            {
+                Console.WriteLine($"Node already exists: {vertex.Latitude}, {vertex.Longitude}");
             }
         }
 
         public void AddEdge(Vertex vertex1, Vertex vertex2)
         {
-            AddNode(vertex1);
-            AddNode(vertex2);
+            if (!adjacencyList.ContainsKey(vertex1))
+            {
+                AddNode(vertex1);
+            }
+
+            if (!adjacencyList.ContainsKey(vertex2))
+            {
+                AddNode(vertex2);
+            }
 
             adjacencyList[vertex1].Add(vertex2);
             adjacencyList[vertex2].Add(vertex1);
+
+            Console.WriteLine($"Added edge between: {vertex1.Latitude}, {vertex1.Longitude} and {vertex2.Latitude}, {vertex2.Longitude}");
         }
+
         public List<Vertex> FindShortestPath(Vertex startVertex, Vertex endVertex)
         {
+            Console.WriteLine($"Start vertex: {startVertex.Latitude}, {startVertex.Longitude}");
+            Console.WriteLine($"End vertex: {endVertex.Latitude}, {endVertex.Longitude}");
+
             Dictionary<Vertex, double> distances = new Dictionary<Vertex, double>();
             Dictionary<Vertex, Vertex> previous = new Dictionary<Vertex, Vertex>();
             HashSet<Vertex> unvisited = new HashSet<Vertex>();
@@ -263,6 +377,8 @@ namespace API
                         currentVertex = vertex;
                     }
                 }
+
+                Console.WriteLine($"Current vertex: {currentVertex?.Latitude}, {currentVertex?.Longitude}");
 
                 if (currentVertex == null)
                 {
@@ -306,12 +422,8 @@ namespace API
             return shortestPath;
         }
 
-
-
-        private double CalculateDistance(Vertex vertex1, Vertex vertex2)
+        public double CalculateDistance(Vertex vertex1, Vertex vertex2)
         {
-            // Replace with your distance calculation logic (e.g., Haversine formula)
-            // Example:
             double lat1 = vertex1.Latitude;
             double lon1 = vertex1.Longitude;
             double lat2 = vertex2.Latitude;
