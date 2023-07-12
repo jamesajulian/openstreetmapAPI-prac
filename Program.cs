@@ -137,6 +137,9 @@ namespace API
 
         static Graph ProcessGeoJson(dynamic geoJsonObject)
         {
+
+            // Process the GeoJSON data and create a new graph by extracting LineString features and creating nodes and edges from their coordinates
+
             Graph graph = new Graph();
 
             foreach (var feature in geoJsonObject.features ?? Enumerable.Empty<dynamic>())
@@ -171,7 +174,7 @@ namespace API
 
         static Vertex FindNearestRoadNode(Graph graph, Vertex coordinate)
         {
-            // Find the nearest road node by calculating the Euclidean distance
+            // Find the nearest road node by calculating the Euclidean
 
             Vertex nearestNode = null;
             double minDistance = double.MaxValue;
@@ -192,7 +195,7 @@ namespace API
 
         static int FindClosestNode(List<double[]> nodeLatLons, double lat, double lon)
         {
-            // Find the closest node index using the scaled haversine node distance
+            // Find the closest node using haversine node distance
 
             int closestNodeIndex = 0;
             double closestDistance = ScaledHaversineNodeDistance(lat, lon, nodeLatLons[0][0], nodeLatLons[0][1]);
@@ -213,20 +216,22 @@ namespace API
 
         static double ScaledHaversineNodeDistance(double lat1, double lon1, double lat2, double lon2)
         {
-            // Implement your own scaled haversine node distance calculation
-            // Replace the code below with your implementation
+            double dLat = DegreesToRadians(lat2 - lat1);
+            double dLon = DegreesToRadians(lon2 - lon1);
+            double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                       Math.Cos(DegreesToRadians(lat1)) * Math.Cos(DegreesToRadians(lat2)) *
+                       Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+            double c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+            double distance = c * 6371;
 
-            double haversineDistance = HaversineDistance(lat1, lon1, lat2, lon2);
-            double scaledDistance = haversineDistance * 1000; // Scale the distance by a factor
-
-            return scaledDistance;
+            return distance;
         }
 
         static double HaversineDistance(double lat1, double lon1, double lat2, double lon2)
         {
-            // Haversine distance calculation between two coordinates
+            // Haversine distance between two coordinates
 
-            double R = 6371; // Radius of the Earth in kilometers
+            double R = 6371; // Radius of the Earth(KM)
             double dLat = DegreesToRadians(lat2 - lat1);
             double dLon = DegreesToRadians(lon2 - lon1);
             double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
@@ -303,6 +308,8 @@ namespace API
         }
     }
 
+
+    // Dijkstra's
     public class Graph
     {
         public Dictionary<Vertex, List<Vertex>> adjacencyList;
