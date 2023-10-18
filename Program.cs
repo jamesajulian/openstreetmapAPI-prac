@@ -8,6 +8,7 @@ using GeoJSON.Net.Feature;
 using GeoJSON.Net.Geometry;
 using Newtonsoft.Json;
 using System.Linq;
+using System.Dynamic;
 
 namespace API
 {
@@ -30,7 +31,7 @@ namespace API
                 double lat2 = double.Parse(secondCoordinate[0]);
                 double lon2 = double.Parse(secondCoordinate[1]);
 
-                string overpassQuery = $"[out:json];way(around:5000,{lat1},{lon1},{lat2},{lon2})[highway~\"^(primary|secondary|tertiary|residential|motorway)$\"];out;";
+                string overpassQuery = $"[out:json];(node(around:5000,{lat1},{lon1},{lat2},{lon2}); way(around:5000,{lat1},{lon1},{lat2},{lon2})[highway~" ^// (primary | secondary | tertiary | residential | motorway)$"];);out;"; ;
                 string overpassUrl = $"https://lz4.overpass-api.de/api/interpreter?data={Uri.EscapeDataString(overpassQuery)}";
 
                 // Download GeoJSON data and store it in a JSON file
@@ -92,13 +93,58 @@ namespace API
                         // Convert geocoded shortest path to GeoJSON LineString
                         string geocodedShortestPathGeoJson = ConvertToGeoJsonLineString(geocodedShortestPath);
 
-                        // Save the geocoded shortest path GeoJSON to a file
+
+                        dynamic features = new ExpandoObject();
+                        List<dynamic> featureList = new List<dynamic>();
+                        features.type = "FeatureCollection";
+                        {
+                            //Start Point 
+                            dynamic feature = new ExpandoObject();
+                            dynamic geometry = new ExpandoObject();
+                            feature.type = "Feature";
+                            geometry.type = "Point";
+                            feature.geometry = geometry;
+                            double[] coords = {startVertex.Longitude , startVertex.Latitude};
+                            featureList.Add(feature);
+
+                        }
+                        {
+                            //End Point 
+                            dynamic feature = new ExpandoObject();
+                            dynamic geometry = new ExpandoObject();
+                            feature.type = "Feature";
+                            geometry.type = "Point";
+                            feature.geometry = geometry;
+                            double[] coords = { endVertex.Longitude, endVertex.Latitude };
+                            featureList.Add(feature);
+
+                        }
+                        //Graph LINE
+                        
+                            
+                            dynamic featureLINE = new ExpandoObject();
+                            dynamic geometryLINE = new ExpandoObject();
+                            featureLINE.type = "Feature";
+                        geometryLINE.type = "LineString";
+                        geometryLINE.coodinates = new List<dynamic>();
+                        foreach (var node in shortestPath)
+                        {
+                            double[] coords = { node.Longitude, node.Latitude };
+                            geometryLINE.coodinates.Add(coords);
+                        }
+                        featureLINE.geometry = geometryLINE;
+                        featureList.Add(featureLINE);
+
+
+                        // Save the shortest path GeoJSON to a file
                         string geocodedShortestPathFilePath = Path.Combine(Directory.GetCurrentDirectory(), "geocoded-shortest-path.geojson");
                         File.WriteAllText(geocodedShortestPathFilePath, geocodedShortestPathGeoJson);
 
                         // Print the path to the geocoded shortest path GeoJSON file
                         Console.WriteLine("Geocoded Shortest Path GeoJSON File Path:");
                         Console.WriteLine(geocodedShortestPathFilePath);
+
+
 
                         // Open geojson.io with the geocoded shortest path data
                         OpenGeoJsonIO(geocodedShortestPathFilePath);
@@ -137,16 +183,13 @@ namespace API
 
         static Graph ProcessGeoJson(dynamic geoJsonObject)
         {
-
-            // Process the GeoJSON data and create a new graph by extracting LineString features and creating nodes and edges from their coordinates
-
             Graph graph = new Graph();
 
             foreach (var feature in geoJsonObject.features ?? Enumerable.Empty<dynamic>())
             {
                 if (feature.geometry?.type == "LineString")
                 {
-                    List<Vertex> vertices = new List<Vertex>();
+                    List<Road> roads = new List<Road>();
 
                     foreach (var position in feature.geometry.coordinates)
                     {
@@ -154,20 +197,22 @@ namespace API
                         double longitude = position[0];
 
                         Vertex vertex = new Vertex(latitude, longitude);
-                        vertices.Add(vertex);
-
                         graph.AddNode(vertex);
+
+                        roads.Add(new Road(vertex, speedLimit)); // Replace 'speedLimit' with the appropriate value
                     }
 
-                    for (int i = 0; i < vertices.Count - 1; i++)
+                    for (int i = 0; i < roads.Count - 1; i++)
                     {
-                        Vertex startVertex = vertices[i];
-                        Vertex endVertex = vertices[i + 1];
+                        Road startRoad = roads[i];
+                        Road endRoad = roads[i + 1];
 
-                        graph.AddEdge(startVertex, endVertex);
+                        graph.AddEdge(startRoad, endRoad);
                     }
                 }
             }
+
+            graph.RemoveDisconnectedNodes();
 
             return graph;
         }
@@ -256,18 +301,18 @@ namespace API
             var featureCollection = new FeatureCollection();
             featureCollection.Features.Add(feature);
 
+            var point1 = new Feature(new Point(new Position(vertices.First().Latitude, vertices.First().Longitude)));
+            featureCollection.Features.Add(point1);
             return JsonConvert.SerializeObject(featureCollection);
         }
-
-        static async Task<List<Vertex>> ReverseGeocodeShortestPath(List<Vertex> shortestPath)
+        static async Task<List<Vertex>> ReverseGeocodeShortestPath(List<Road> shortestPath)
         {
-            // Reverse geocode each vertex in the shortest path to get the coordinates
-
             List<Vertex> geocodedPath = new List<Vertex>();
             string apiKey = "5b3ce3597851110001cf624800a0f6d78de048e280faef2746b611d3";
 
-            foreach (var vertex in shortestPath)
+            foreach (var road in shortestPath)
             {
+                Vertex vertex = road.Destination;
                 string reverseGeocodeUrl = $"https://api.openrouteservice.org/geocode/reverse?api_key={apiKey}&point.lon={vertex.Longitude}&point.lat={vertex.Latitude}";
 
                 using (HttpClient client = new HttpClient())
@@ -295,16 +340,28 @@ namespace API
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(geoJsonIOUrl) { UseShellExecute = true });
         }
     }
-
-    public class Vertex
+    public struct Vertex
     {
         public double Latitude { get; }
         public double Longitude { get; }
+        public int ID { get; set; } // Add ID property
 
         public Vertex(double latitude, double longitude)
         {
             Latitude = latitude;
             Longitude = longitude;
+            ID = 0; // Initialize ID to a default value, you can set it later
+        }
+    }
+    public struct Road
+    {
+        public Vertex Destination { get; }
+        public double SpeedLimit { get; }
+
+        public Road(Vertex destination, double speedLimit)
+        {
+            Destination = destination;
+            SpeedLimit = speedLimit;
         }
     }
 
@@ -312,12 +369,12 @@ namespace API
     // Dijkstra's
     public class Graph
     {
-        public Dictionary<Vertex, List<Vertex>> adjacencyList;
+        public Dictionary<Vertex, List<Road>> adjacencyList;
         public List<double[]> NodeLatLons;
 
         public Graph()
         {
-            adjacencyList = new Dictionary<Vertex, List<Vertex>>();
+            adjacencyList = new Dictionary<Vertex, List<Road>>();
             NodeLatLons = new List<double[]>();
         }
 
@@ -325,7 +382,7 @@ namespace API
         {
             if (!adjacencyList.ContainsKey(vertex))
             {
-                adjacencyList[vertex] = new List<Vertex>();
+                adjacencyList[vertex] = new List<Road>();
                 NodeLatLons.Add(new double[] { vertex.Latitude, vertex.Longitude });
                 Console.WriteLine($"Added new node: {vertex.Latitude}, {vertex.Longitude}");
             }
@@ -335,22 +392,22 @@ namespace API
             }
         }
 
-        public void AddEdge(Vertex vertex1, Vertex vertex2)
+        public void AddEdge(Road road1, Road road2)
         {
-            if (!adjacencyList.ContainsKey(vertex1))
+            if (!adjacencyList.ContainsKey(road1.Destination))
             {
-                AddNode(vertex1);
+                AddNode(road1.Destination);
             }
 
-            if (!adjacencyList.ContainsKey(vertex2))
+            if (!adjacencyList.ContainsKey(road2.Destination))
             {
-                AddNode(vertex2);
+                AddNode(road2.Destination);
             }
 
-            adjacencyList[vertex1].Add(vertex2);
-            adjacencyList[vertex2].Add(vertex1);
+            adjacencyList[road1.Destination].Add(road2);
+            adjacencyList[road2.Destination].Add(road1);
 
-            Console.WriteLine($"Added edge between: {vertex1.Latitude}, {vertex1.Longitude} and {vertex2.Latitude}, {vertex2.Longitude}");
+            Console.WriteLine($"Added edge between: {road1.Destination.Latitude}, {road1.Destination.Longitude} and {road2.Destination.Latitude}, {road2.Destination.Longitude}");
         }
 
         public List<Vertex> FindShortestPath(Vertex startVertex, Vertex endVertex)
